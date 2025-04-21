@@ -1,108 +1,113 @@
 import streamlit as st
 import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
 import numpy as np
+import matplotlib
+import folium
+from folium import Map, CircleMarker, Tooltip
+from sklearn.cluster import DBSCAN
 import requests
 import xmltodict
 
-st.set_page_config(page_title="Explorador de Precios de Gasolina", layout="wide")
-
-st.title("🌟 Explorador de Precios de Gasolina en México")
-
+# ----------------------
+# CARGAR DATOS DE LA API DE LA CRE
+# ----------------------
 @st.cache_data
-
-def load_data():
-    # Descarga de precios
-    url_prices = 'https://publicacionexterna.azurewebsites.net/publicaciones/prices'
-    r_prices = requests.get(url_prices)
-    xml_prices = xmltodict.parse(r_prices.text.lstrip('ï»¿'))
-    prices = xml_prices['places']['place']
-
-    data_precios = []
-    for p in prices:
-        pid = p['@place_id']
-        if isinstance(p['gas_price'], list):
-            for g in p['gas_price']:
-                data_precios.append({
-                    'place_id': pid,
-                    'gas_type': g['@type'],
-                    'price': g['#text']
-                })
+def cargar_datos_cre():
+    # Precios
+    url_precios = "https://publicacionexterna.azurewebsites.net/publicaciones/prices"
+    res1 = requests.get(url_precios)
+    data1 = xmltodict.parse(res1.content.decode('utf-8-sig'))
+    precios = []
+    for lugar in data1['places']['place']:
+        if isinstance(lugar['gas_price'], list):
+            for p in lugar['gas_price']:
+                precios.append({'place_id': lugar['@place_id'], 'gas_type': p['@type'], 'price': p['#text']})
         else:
-            g = p['gas_price']
-            data_precios.append({
-                'place_id': pid,
-                'gas_type': g['@type'],
-                'price': g['#text']
-            })
+            p = lugar['gas_price']
+            precios.append({'place_id': lugar['@place_id'], 'gas_type': p['@type'], 'price': p['#text']})
+    df_precios = pd.DataFrame(precios)
 
-    base_precios = pd.DataFrame(data_precios)
-
-    # Descarga de ubicaciones
-    url_places = 'https://publicacionexterna.azurewebsites.net/publicaciones/places'
-    r_places = requests.get(url_places)
-    xml_places = xmltodict.parse(r_places.content.decode('utf-8-sig'))
-    places = xml_places['places']['place']
-
-    data_places = []
-    for place in places:
-        data_places.append({
-            'place_id': place['@place_id'],
-            'name': place['name'],
-            'cre_id': place['cre_id'],
-            'x': place['location']['x'],
-            'y': place['location']['y']
+    # Ubicaciones
+    url_ubicaciones = "https://publicacionexterna.azurewebsites.net/publicaciones/places"
+    res2 = requests.get(url_ubicaciones)
+    data2 = xmltodict.parse(res2.content.decode('utf-8-sig'))
+    lugares = []
+    for lugar in data2['places']['place']:
+        lugares.append({
+            'place_id': lugar['@place_id'],
+            'name': lugar['name'],
+            'cre_id': lugar['cre_id'],
+            'x': lugar['location']['x'],
+            'y': lugar['location']['y']
         })
+    df_lugares = pd.DataFrame(lugares)
 
-    base_id = pd.DataFrame(data_places)
-    df = pd.merge(base_precios, base_id, on='place_id', how='inner')
+    # Merge
+    df = pd.merge(df_precios, df_lugares, on='place_id', how='inner')
     df['price'] = pd.to_numeric(df['price'], errors='coerce')
+    df['x'] = pd.to_numeric(df['x'], errors='coerce')
+    df['y'] = pd.to_numeric(df['y'], errors='coerce')
+    df = df.dropna(subset=['price', 'x', 'y'])
     return df
 
-df = load_data()
+# ----------------------
+# FUNCIONES DE CLUSTER
+# ----------------------
+def generar_mapa_clusters(df, tipo_gasolina='regular', price_range_max=0.02, eps_km=3):
+    df = df[df['gas_type'] == tipo_gasolina].copy()
+    df = df.dropna(subset=['x', 'y', 'price'])
 
-# Filtros laterales
-gas_type = st.sidebar.selectbox("Selecciona el tipo de gasolina", df['gas_type'].unique())
-price_min, price_max = st.sidebar.slider("Rango de precio", float(df['price'].min()), float(df['price'].max()), (float(df['price'].min()), float(df['price'].max())))
+    coords = np.radians(df[['y', 'x']].values)
+    kms_per_radian = 6371.0088
+    eps = eps_km / kms_per_radian
+    db = DBSCAN(eps=eps, min_samples=3, algorithm='ball_tree', metric='haversine').fit(coords)
+    df['cluster_geo'] = db.labels_
 
-# Filtro de datos
-df_filtered = df[(df['gas_type'] == gas_type) & (df['price'] >= price_min) & (df['price'] <= price_max)]
+    df_valid = df[df['cluster_geo'] != -1]
+    agg = df_valid.groupby('cluster_geo').agg(
+        count=('price', 'count'),
+        min_price=('price', 'min'),
+        max_price=('price', 'max'),
+        num_names=('name', pd.Series.nunique)
+    ).reset_index()
+    agg['price_range'] = agg['max_price'] - agg['min_price']
 
-st.markdown(f"### Visualización de precios para: `{gas_type}`")
-st.write(f"Observaciones filtradas: {len(df_filtered)}")
+    sospechosos = agg[(agg['count'] >= 3) & (agg['price_range'] <= price_range_max) & (agg['num_names'] >= 2)]
+    df_sospechosos = df[df['cluster_geo'].isin(sospechosos['cluster_geo'])].copy()
 
-# Histogram
-fig1, ax1 = plt.subplots(figsize=(8, 4))
-sns.histplot(df_filtered['price'], bins=30, kde=True, ax=ax1)
-ax1.set_title(f"Histograma de precios para {gas_type}")
-ax1.set_xlabel("Precio (MXN)")
-ax1.set_ylabel("Frecuencia")
-st.pyplot(fig1)
+    m = Map(location=[df_sospechosos['y'].mean(), df_sospechosos['x'].mean()], zoom_start=6, tiles="CartoDB positron")
+    cluster_ids = df_sospechosos['cluster_geo'].unique()
+    color_palette = matplotlib.cm.get_cmap('tab20', len(cluster_ids))
+    cluster_colors = {cid: matplotlib.colors.rgb2hex(color_palette(i)[:3]) for i, cid in enumerate(cluster_ids)}
 
-# CDF
-fig2, ax2 = plt.subplots(figsize=(8, 4))
-prices = np.sort(df_filtered['price'])
-cdf = np.arange(1, len(prices) + 1) / len(prices)
-ax2.plot(prices, cdf, marker='.', linestyle='none', color='blue')
-ax2.set_title(f"CDF de precios para {gas_type}")
-ax2.set_xlabel("Precio (MXN)")
-ax2.set_ylabel("Distribución acumulada")
-ax2.grid(True)
-st.pyplot(fig2)
+    for _, row in df_sospechosos.iterrows():
+        CircleMarker(
+            location=[row['y'], row['x']],
+            radius=4,
+            color=cluster_colors.get(row['cluster_geo'], "#000000"),
+            fill=True,
+            fill_opacity=0.8,
+            tooltip=Tooltip(f"<b>{row['name']}</b><br>Precio: ${row['price']}<br>Cluster: {row['cluster_geo']}")
+        ).add_to(m)
 
-# KDE por tipo de gasolina (fijo)
-st.markdown("### Comparación de distribuciones por tipo de gasolina")
-fig3, ax3 = plt.subplots(figsize=(10, 5))
-for gtype, color in zip(['regular', 'premium', 'diesel'], ['blue', 'red', 'green']):
-    sns.kdeplot(df[df['gas_type'] == gtype]['price'], cumulative=True, label=gtype.capitalize(), ax=ax3, color=color)
-ax3.set_xlim(18, 30)
-ax3.set_xlabel("Precio (MXN)")
-ax3.set_ylabel("Distribución acumulada")
-ax3.set_title("CDF por tipo de gasolina")
-ax3.legend()
-st.pyplot(fig3)
+    return m, sospechosos
 
-# Tabla
-st.markdown("### Vista tabular de datos filtrados")
-st.dataframe(df_filtered.head(100))
+# ----------------------
+# INTERFAZ STREAMLIT
+# ----------------------
+st.set_page_config(page_title="Clusters sospechosos de gasolina", layout="wide")
+st.title("🌟 Clusters sospechosos de estaciones de gasolina")
+st.markdown("Explora agrupaciones de estaciones con precios similares y proximidad geográfica, usando datos reales de la CRE.")
+
+df_base = cargar_datos_cre()
+
+tipo = st.selectbox("Selecciona el tipo de gasolina", ['regular', 'premium', 'diesel'])
+price_limit = st.slider("Diferencia máxima de precios dentro del cluster (MXN)", 0.00, 0.10, 0.02, step=0.01)
+radius_km = st.slider("Radio máximo entre estaciones para formar cluster (km)", 1, 10, 3)
+
+if st.button("🌿 Generar mapa"):
+    mapa, resumen = generar_mapa_clusters(df_base, tipo_gasolina=tipo, price_range_max=price_limit, eps_km=radius_km)
+    st.markdown(f"### Se detectaron **{len(resumen)}** clusters sospechosos.")
+    st.dataframe(resumen)
+    st.components.v1.html(mapa._repr_html_(), height=700, scrolling=True)
+

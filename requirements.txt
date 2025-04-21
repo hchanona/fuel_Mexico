@@ -1,7 +1,8 @@
 streamlit
 pandas
+numpy
+scikit-learn
+folium
 matplotlib
-seaborn
-requests
 xmltodict
-scipy
+requests
