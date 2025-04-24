@@ -6,8 +6,8 @@ import plotly.express as px
 import plotly.graph_objects as go
 import statsmodels.api as sm
 
-st.set_page_config(page_title="PMR Sandbox (unofficial)", layout="wide")
-st.title("PMR Sandbox (unofficial)")
+st.set_page_config(page_title="Product Market Regulator Sandbox", layout="wide")
+st.title("PMR Sandbox")
 
 @st.cache_data
 def load_data():
@@ -32,7 +32,7 @@ low_level_indicators = [col for col in df.columns if col not in ["Country", "OEC
 st.sidebar.header("Options")
 mode = st.sidebar.radio("What do you want to do?", ["Guided simulation", "Autonomous simulation", "Stats"])
 countries = df["Country"].tolist()
-selected_country = st.sidebar.selectbox("Select a country", countries, index=countries.index("Chile") if "Chile" in countries else 0)
+selected_country = st.sidebar.selectbox("Select a country", countries, index=countries.index("Australia") if "Australia" in countries else 0)
 
 # === MODO: SIMULACIÓN GUIADA ===
 if mode == "Guided simulation":
@@ -88,6 +88,35 @@ if mode == "Guided simulation":
     for ind, val in sliders.items():
         simulated_row[ind] = val
 
+    new_medium_avg = simulated_row[medium_level_indicators].mean()
+    original_medium = row[medium_level_indicators].mean()
+
+    df_simulated = df.copy()
+    df_simulated.loc[df_simulated["Country"] == selected_country, medium_level_indicators] = simulated_row[medium_level_indicators]
+    df_simulated["PMR_simulated"] = df_simulated[medium_level_indicators].mean(axis=1)
+    valid_simulated = df_simulated[df_simulated["PMR_simulated"].notna()].copy()
+    valid_simulated["rank_simulated"] = valid_simulated["PMR_simulated"].rank(method="min")
+
+
+    sliders = {}
+    for ind in top3:
+        current = row[ind]
+        rank = int(rank_df[df["Country"] == selected_country][ind])
+        st.markdown(f"**{ind}**\n\nCurrent score: {round(current,2)} | Rank: {rank}")
+        sliders[ind] = st.slider(ind, 0.0, 6.0, float(current), 0.1)
+
+    simulated_row = row.copy()
+    for ind, val in sliders.items():
+        simulated_row[ind] = val
+
+# 🔧 Actualiza indicadores de nivel medio
+    for medium in medium_level_indicators:
+        subcomponents = [col for col in low_level_indicators if col in df.columns and (col in medium or medium in col)
+    ]
+        if subcomponents:
+            simulated_row[medium] = simulated_row[subcomponents].mean()
+
+# ✅ Ahora sí calcula el nuevo PMR correctamente
     new_medium_avg = simulated_row[medium_level_indicators].mean()
     original_medium = row[medium_level_indicators].mean()
 
