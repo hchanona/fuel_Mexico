@@ -95,8 +95,8 @@ def generar_mapa_clusters(df, tipo_gasolina='regular', price_range_max=0.02, eps
 # ----------------------
 # INTERFAZ STREAMLIT
 # ----------------------
-st.set_page_config(page_title="Clusters sospechosos de gasolina", layout="wide")
-st.title("🌟 Clusters sospechosos de estaciones de gasolina")
+st.set_page_config(page_title="Clusters de gasolina", layout="wide")
+st.title("🌟 Clusters de estaciones de gasolina")
 st.markdown("Explora agrupaciones de estaciones con precios similares y proximidad geográfica, usando datos reales de la CRE.")
 
 df_base = cargar_datos_cre()
@@ -107,7 +107,7 @@ radius_km = st.slider("Radio máximo entre estaciones para formar cluster (km)",
 
 if st.button("🌿 Generar mapa"):
     mapa, resumen = generar_mapa_clusters(df_base, tipo_gasolina=tipo, price_range_max=price_limit, eps_km=radius_km)
-    st.markdown(f"### Se detectaron **{len(resumen)}** clusters sospechosos.")
+    st.markdown(f"### Se detectaron **{len(resumen)}** clusters.")
     st.dataframe(resumen)
     st.components.v1.html(mapa._repr_html_(), height=700, scrolling=True)
 
